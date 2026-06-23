@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     output_dir: str = "/data/outputs"
     allowed_origins: str = "*"
 
+    # Estimated processing time as a fraction of audio duration. Used only to
+    # drive the client-side progress estimate during the (opaque) transcribe
+    # stage: eta_seconds = duration * whisper_rtf_estimate. GPU Whisper is well
+    # below 1.0 (faster than real time); bump it up for slower/CPU endpoints.
+    whisper_rtf_estimate: float = 0.5
+
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024

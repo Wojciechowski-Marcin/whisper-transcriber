@@ -42,8 +42,11 @@ class JobStore:
         srt: str = "",
         vtt: str = "",
         has_segments: bool = False,
+        has_speakers: bool = False,
+        segments: Optional[list[dict]] = None,
+        job_id: Optional[str] = None,
     ) -> dict:
-        job_id = uuid.uuid4().hex[:12]
+        job_id = job_id or uuid.uuid4().hex[:12]
         job_dir = self._job_dir(job_id)
         job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -51,6 +54,10 @@ class JobStore:
         if has_segments:
             (job_dir / "transcript.srt").write_text(srt, encoding="utf-8")
             (job_dir / "transcript.vtt").write_text(vtt, encoding="utf-8")
+        if segments:
+            (job_dir / "segments.json").write_text(
+                json.dumps(segments, indent=2), encoding="utf-8"
+            )
 
         meta = {
             "id": job_id,
@@ -59,10 +66,11 @@ class JobStore:
             "language": language,
             "duration": duration,
             "has_segments": has_segments,
+            "has_speakers": has_speakers,
             "created_at": _now_iso(),
         }
         (job_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        return {**meta, "text": text}
+        return {**meta, "text": text, "segments": segments or []}
 
     def list(self) -> list[dict]:
         jobs: list[dict] = []
@@ -85,6 +93,14 @@ class JobStore:
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
         txt = self._job_dir(job_id) / "transcript.txt"
         meta["text"] = txt.read_text(encoding="utf-8") if txt.is_file() else ""
+        seg_file = self._job_dir(job_id) / "segments.json"
+        if seg_file.is_file():
+            try:
+                meta["segments"] = json.loads(seg_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                meta["segments"] = []
+        else:
+            meta["segments"] = []
         return meta
 
     def file_path(self, job_id: str, fmt: str) -> Optional[Path]:

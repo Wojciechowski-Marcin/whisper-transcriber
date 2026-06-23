@@ -28,6 +28,27 @@ def test_parse_text_only_fallback():
     assert result.text == "just text"
 
 
+def test_parse_speakers():
+    payload = {
+        "text": "hi there",
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "hi", "speaker": "Speaker 1"},
+            {"start": 1.0, "end": 2.0, "text": "there", "speaker": "Speaker 2"},
+        ],
+    }
+    result = _parse_response(payload)
+    assert result.has_segments
+    assert result.has_speakers
+    assert result.segments[0]["speaker"] == "Speaker 1"
+
+
+def test_parse_no_speakers_when_absent():
+    payload = {"segments": [{"start": 0.0, "end": 1.0, "text": "hi"}]}
+    result = _parse_response(payload)
+    assert result.has_segments
+    assert not result.has_speakers
+
+
 def test_parse_plain_string():
     result = _parse_response("raw text body")
     assert result.text == "raw text body"
@@ -46,13 +67,13 @@ async def test_convert_raises_when_ffmpeg_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_transcribe_upload_mocks_ffmpeg_and_upstream(monkeypatch):
-    async def fake_convert(input_path: str) -> str:
+    async def fake_convert(input_path: str, on_progress=None):
         # pretend ffmpeg produced a wav
         import tempfile, os
         fd, path = tempfile.mkstemp(suffix=".wav")
         os.write(fd, b"RIFFfakewav")
         os.close(fd)
-        return path
+        return path, 1.0
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

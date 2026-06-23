@@ -11,9 +11,10 @@ OpenAI, Groq, …) configured entirely through environment variables.
 
 ## Features
 
-- 📤 Drag-and-drop upload with live progress
-- 🎬 Server-side `ffmpeg` audio extraction (any audio **or** video container)
-- 📝 Transcript + **SRT** + **VTT** downloads, copy-to-clipboard
+- 📤 Drag-and-drop upload with **live, staged progress** (uploading → converting → transcribing → saving) streamed over Server-Sent Events
+- 🎬 Server-side `ffmpeg` audio extraction (any audio **or** video container), with real conversion %
+- 🗣️ Optional **speaker diarization** ("who is talking") — shown as colour-coded Speaker turns when the endpoint supports it
+- 📝 Transcript + **SRT** + **VTT** downloads (speaker-labelled when available), copy-to-clipboard
 - 🌐 Detected language and audio duration
 - 💾 Results persisted to disk and shown in a browsable history (with delete)
 - 🔌 Bring-your-own endpoint — works with self-hosted Whisper, OpenAI, Groq, …
@@ -23,18 +24,21 @@ OpenAI, Groq, …) configured entirely through environment variables.
 
 ```
 Browser (React/Vite/TS)
-   │  multipart upload (audio | video)
+   │  1. multipart upload (audio | video)  →  { job_id }   (202)
+   │  2. EventSource  GET /api/jobs/{id}/events  (SSE progress)
    ▼
-FastAPI backend
-   │  1. ffmpeg → 16 kHz mono WAV
-   │  2. POST to WHISPER_API_URL (response_format=verbose_json)
-   │  3. build txt / srt / vtt, persist under OUTPUT_DIR
+FastAPI backend  ── async job ──▶ in-memory progress registry → SSE
+   │  a. ffmpeg → 16 kHz mono WAV         (converting %)
+   │  b. POST to WHISPER_API_URL          (transcribing; verbose_json [+ diarize])
+   │  c. build txt / srt / vtt, persist under OUTPUT_DIR   (saving)
    ▼
 Any OpenAI-compatible /audio/transcriptions endpoint
 ```
 
-If the upstream endpoint returns segment timestamps (OpenAI `verbose_json`), SRT/VTT are produced.
-If it only returns plain text, the app gracefully degrades to a text-only transcript.
+The upload returns a `job_id` immediately; the browser then follows the job over SSE and sees each
+stage. If the upstream returns segment timestamps (OpenAI `verbose_json`), SRT/VTT are produced; if
+it only returns plain text, the app gracefully degrades to a text-only transcript. Speaker labels
+are treated the same way — rendered when the endpoint returns them, hidden otherwise.
 
 ## Quickstart
 
@@ -56,6 +60,7 @@ All configuration is via environment variables (see `.env.example`):
 | `WHISPER_MODEL`   | `whisper-1`                                           | Model name (`whisper-1` for OpenAI, `whisper-large-v3` for Groq; ignored by some self-hosted servers) |
 | `MAX_UPLOAD_MB`   | `200`                                                | Reject uploads larger than this |
 | `REQUEST_TIMEOUT` | `600`                                                | Upstream request timeout (seconds) |
+| `WHISPER_RTF_ESTIMATE` | `0.5`                                           | Estimated processing time ÷ audio duration; drives the transcribe-stage progress estimate |
 | `OUTPUT_DIR`      | `/data/outputs`                                      | Where transcripts are persisted |
 | `ALLOWED_ORIGINS` | `*`                                                  | CORS origins, comma-separated |
 
@@ -102,9 +107,10 @@ cd backend && pytest
 
 | Method | Path                              | Description |
 |--------|-----------------------------------|-------------|
-| `POST` | `/api/transcribe`                 | Upload a file (`file`, optional `language`); returns the job |
+| `POST` | `/api/transcribe`                 | Upload a file (`file`, optional `language`, optional `diarize=true`); returns `{ "job_id" }` (`202`) and processes asynchronously |
+| `GET`  | `/api/jobs/{id}/events`           | **SSE** stream of job progress (`stage`, `pct`, `eta_seconds`, …) ending with the finished job or an error |
 | `GET`  | `/api/history`                    | List persisted jobs (newest first) |
-| `GET`  | `/api/jobs/{id}`                  | Single job + transcript text |
+| `GET`  | `/api/jobs/{id}`                  | Single job + transcript text + segments |
 | `GET`  | `/api/jobs/{id}/download/{fmt}`   | Download `txt` / `srt` / `vtt` / `json` |
 | `DELETE` | `/api/jobs/{id}`                | Delete a job |
 | `GET`  | `/api/health`                     | Health + upstream reachability |
@@ -114,6 +120,16 @@ cd backend && pytest
 SRT/VTT need segment-level timestamps. The app requests OpenAI's `verbose_json` format; OpenAI and
 Groq return segments natively. A self-hosted faster-whisper server must also return `segments` for
 that response format — otherwise the app falls back to a text-only transcript.
+
+## Note on speaker diarization
+
+Whisper transcribes words but cannot tell *who* is speaking. When you tick **Detect speakers**, the
+app sends `diarize=true` to the endpoint; a diarization-capable backend may then return a `speaker`
+label on each segment, which the UI renders as colour-coded turns and weaves into the txt/SRT/VTT
+exports. Generic endpoints (OpenAI, Groq) ignore the flag and simply return no speakers. To get real
+diarization on a self-hosted server, the endpoint needs an audio diarization model
+(e.g. [`pyannote.audio`](https://github.com/pyannote/pyannote-audio)) wired behind the same
+`/audio/transcriptions` route.
 
 ## License
 

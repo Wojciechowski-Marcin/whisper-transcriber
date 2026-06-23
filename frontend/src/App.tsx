@@ -1,26 +1,35 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Dropzone from "./components/Dropzone";
 import JobResult from "./components/JobResult";
 import HistoryPanel from "./components/HistoryPanel";
+import ProgressCard from "./components/ProgressCard";
 import {
   Job,
+  JobProgress,
   HealthInfo,
-  uploadFile,
+  Stage,
+  startJob,
+  subscribeJob,
   fetchHistory,
   fetchJob,
   deleteJob,
   fetchHealth,
 } from "./lib/api";
 
-type Status = "idle" | "uploading" | "transcribing" | "error";
+type Status = "idle" | "uploading" | "converting" | "transcribing" | "saving" | "error";
+const WORKING: Status[] = ["uploading", "converting", "transcribing", "saving"];
 
 export default function App() {
   const [status, setStatus] = useState<Status>("idle");
-  const [progress, setProgress] = useState(0);
+  const [uploadPct, setUploadPct] = useState(0);
+  const [prog, setProg] = useState<JobProgress | null>(null);
+  const [startedAt, setStartedAt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState<Job | null>(null);
   const [history, setHistory] = useState<Job[]>([]);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const [diarize, setDiarize] = useState(false);
+  const unsubRef = useRef<(() => void) | null>(null);
 
   async function refreshHistory() {
     try {
@@ -33,21 +42,37 @@ export default function App() {
   useEffect(() => {
     refreshHistory();
     fetchHealth().then(setHealth).catch(() => setHealth(null));
+    return () => unsubRef.current?.();
   }, []);
 
   async function handleFile(file: File) {
+    unsubRef.current?.();
     setError(null);
     setActive(null);
+    setProg(null);
+    setUploadPct(0);
     setStatus("uploading");
-    setProgress(0);
+    setStartedAt(Date.now());
     try {
-      const job = await uploadFile(file, undefined, (pct) => {
-        setProgress(pct);
-        if (pct >= 100) setStatus("transcribing");
+      const jobId = await startJob(file, { diarize }, setUploadPct);
+      unsubRef.current = subscribeJob(jobId, {
+        onProgress: (p) => {
+          setProg(p);
+          if (WORKING.includes(p.stage as Status)) setStatus(p.stage as Status);
+          else if (p.stage === "queued") setStatus("converting");
+        },
+        onDone: (job) => {
+          setProg(null);
+          setStatus("idle");
+          setActive(job);
+          refreshHistory();
+        },
+        onError: (msg) => {
+          setProg(null);
+          setError(msg);
+          setStatus("error");
+        },
       });
-      setActive(job);
-      setStatus("idle");
-      refreshHistory();
     } catch (e) {
       setError((e as Error).message);
       setStatus("error");
@@ -68,7 +93,8 @@ export default function App() {
     refreshHistory();
   }
 
-  const busy = status === "uploading" || status === "transcribing";
+  const busy = WORKING.includes(status);
+  const stage: Stage = status === "uploading" ? "queued" : (prog?.stage ?? "queued");
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10">
@@ -76,7 +102,7 @@ export default function App() {
         <div>
           <h1 className="text-2xl font-bold">🎙️ Whisper Transcriber</h1>
           <p className="text-sm text-slate-400">
-            Upload audio or video — get transcript, SRT &amp; VTT.
+            Upload audio or video — get transcript, speakers, SRT &amp; VTT.
           </p>
         </div>
         {health && (
@@ -94,24 +120,22 @@ export default function App() {
 
       <div className="grid gap-8 md:grid-cols-[1fr_320px]">
         <main className="space-y-5">
-          <Dropzone disabled={busy} onSelect={handleFile} />
+          <Dropzone
+            disabled={busy}
+            diarize={diarize}
+            onDiarizeChange={setDiarize}
+            onSelect={handleFile}
+          />
 
           {busy && (
-            <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-4">
-              <div className="mb-2 flex justify-between text-sm text-slate-300">
-                <span>{status === "uploading" ? "Uploading…" : "Transcribing…"}</span>
-                {status === "uploading" && <span>{progress}%</span>}
-              </div>
-              <div className="h-2 overflow-hidden rounded bg-slate-700">
-                <div
-                  className={[
-                    "h-full bg-sky-500 transition-all",
-                    status === "transcribing" ? "w-full animate-pulse" : "",
-                  ].join(" ")}
-                  style={status === "uploading" ? { width: `${progress}%` } : undefined}
-                />
-              </div>
-            </div>
+            <ProgressCard
+              stage={stage}
+              uploading={status === "uploading"}
+              pct={status === "uploading" ? uploadPct : prog?.pct ?? null}
+              message={status === "uploading" ? "Uploading…" : prog?.message ?? ""}
+              etaSec={prog?.eta_seconds ?? null}
+              startedAt={startedAt}
+            />
           )}
 
           {error && (
