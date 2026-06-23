@@ -1,0 +1,15 @@
+services:
+  whisper-transcriber:
+    build: .
+    image: whisper-transcriber:latest
+    container_name: whisper-transcriber
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - outputs:/data/outputs
+    restart: unless-stopped
+
+volumes:
+  outputs:

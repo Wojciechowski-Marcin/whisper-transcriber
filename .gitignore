@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+backend/static/
+*.local
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Persisted transcription outputs (runtime data)
+outputs/
+data/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
