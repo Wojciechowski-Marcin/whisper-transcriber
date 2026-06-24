@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -26,7 +27,33 @@ settings = get_settings()
 store = JobStore(settings.output_dir)
 registry = JobRegistry()
 
-app = FastAPI(title="whisper-transcriber", version="1.0.0")
+# The upstream whisper endpoint runs on a memory-constrained GPU box that gets
+# OOM-killed if two transcriptions run at once — so jobs are queued here and
+# processed strictly one at a time, regardless of how many uploads arrive.
+job_queue: "asyncio.Queue[dict]" = asyncio.Queue()
+
+
+async def _worker() -> None:
+    while True:
+        item = await job_queue.get()
+        try:
+            await run_job(**item)
+        except Exception:  # noqa: BLE001 — never let one bad job kill the worker
+            logger.exception("Unhandled error processing job %s", item.get("job_id"))
+        finally:
+            job_queue.task_done()
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    worker_task = asyncio.create_task(_worker())
+    yield
+    worker_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await worker_task
+
+
+app = FastAPI(title="whisper-transcriber", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -134,15 +161,20 @@ async def transcribe(
             detail=f"File exceeds {settings.max_upload_mb} MB limit",
         )
 
-    job = registry.create()
-    asyncio.create_task(
-        run_job(
-            job.id,
-            data=data,
-            filename=file.filename or "upload",
-            language=language,
-            diarize=diarize,
-        )
+    filename = file.filename or "upload"
+    job = registry.create(filename=filename)
+    job_queue.put_nowait(
+        {
+            "job_id": job.id,
+            "data": data,
+            "filename": filename,
+            "language": language,
+            "diarize": diarize,
+        }
+    )
+    registry.update(
+        job.id,
+        message=f"Queued (position {job_queue.qsize()})" if job_queue.qsize() > 1 else "Queued",
     )
     return {"job_id": job.id}
 
@@ -170,9 +202,39 @@ async def job_events(job_id: str):
     )
 
 
+@app.get("/api/jobs/{job_id}/status")
+async def job_status(job_id: str):
+    """Non-streaming progress snapshot — the polling fallback for environments
+    where SSE is buffered/blocked (e.g. some reverse proxies)."""
+    state = registry.get(job_id)
+    if state is not None:
+        return state.snapshot()
+    # Not in the registry (e.g. finished and pruned) — fall back to disk.
+    job = store.get(job_id)
+    if job is not None:
+        return {
+            "id": job_id,
+            "stage": "done",
+            "pct": 100.0,
+            "message": "Done",
+            "duration": job.get("duration"),
+            "eta_seconds": None,
+            "job": job,
+        }
+    raise HTTPException(status_code=404, detail="Job not found")
+
+
 @app.get("/api/history")
 async def history():
-    return store.list()
+    """In-flight jobs (from the registry) first, then persisted jobs (from disk),
+    so a page reload still shows anything currently running/failed."""
+    persisted = store.list()
+    for job in persisted:
+        job["status"] = "done"
+    active = registry.list_active()
+    persisted_ids = {job["id"] for job in persisted}
+    fresh_active = [a for a in active if a["id"] not in persisted_ids]
+    return fresh_active + persisted
 
 
 @app.get("/api/jobs/{job_id}")

@@ -4,7 +4,7 @@ interface Props {
   disabled: boolean;
   diarize: boolean;
   onDiarizeChange: (value: boolean) => void;
-  onSelect: (file: File) => void;
+  onSelect: (files: File[]) => void;
 }
 
 export default function Dropzone({ disabled, diarize, onDiarizeChange, onSelect }: Props) {
@@ -12,7 +12,7 @@ export default function Dropzone({ disabled, diarize, onDiarizeChange, onSelect 
   const [dragging, setDragging] = useState(false);
 
   function handleFiles(files: FileList | null) {
-    if (files && files.length > 0) onSelect(files[0]);
+    if (files && files.length > 0) onSelect(Array.from(files));
   }
 
   return (
@@ -39,6 +39,7 @@ export default function Dropzone({ disabled, diarize, onDiarizeChange, onSelect 
           ref={inputRef}
           type="file"
           accept="audio/*,video/*"
+          multiple
           className="hidden"
           onChange={(e) => handleFiles(e.target.files)}
         />
@@ -46,8 +47,11 @@ export default function Dropzone({ disabled, diarize, onDiarizeChange, onSelect 
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
             d="M3 16.5V18a2.25 2.25 0 002.25 2.25h13.5A2.25 2.25 0 0021 18v-1.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
         </svg>
-        <p className="font-medium">Drop an audio or video file here</p>
-        <p className="text-sm text-slate-400">or click to browse — mp3, m4a, wav, mp4, mkv, mov…</p>
+        <p className="font-medium">Drop audio or video files here</p>
+        <p className="text-sm text-slate-400">
+          or click to browse — mp3, m4a, wav, mp4, mkv, mov… (multiple files are queued and
+          processed one at a time)
+        </p>
       </div>
 
       <label className="flex items-center gap-2 text-sm text-slate-300 select-none">

@@ -16,6 +16,13 @@ export interface Job {
   created_at: string;
   text?: string;
   segments?: Segment[];
+  // Present in history listings: "done" for persisted jobs, "running"/"error"
+  // for in-flight jobs surfaced from the server's job registry.
+  status?: "running" | "done" | "error";
+  stage?: Stage;
+  pct?: number | null;
+  message?: string;
+  error?: string;
 }
 
 export interface HealthInfo {
@@ -98,58 +105,75 @@ interface SubscribeHandlers {
   onError: (message: string) => void;
 }
 
-/** Stream a job's progress over SSE. Returns an unsubscribe fn. If the SSE
- *  connection drops before completion, falls back to polling the job (which
- *  exists on disk once finished). */
+/** Follow a job's progress. Tries SSE first (instant, low-overhead); if no event
+ *  arrives quickly (e.g. a proxy buffers the stream) or the stream errors, falls
+ *  back to polling the status endpoint so stages still update everywhere.
+ *  Returns an unsubscribe fn. */
 export function subscribeJob(jobId: string, handlers: SubscribeHandlers): () => void {
-  const es = new EventSource(api(`jobs/${jobId}/events`));
-  let finished = false;
+  let stopped = false;
+  let polling = false;
+  let es: EventSource | null = null;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
 
-  es.onmessage = (ev) => {
-    let p: JobProgress;
-    try {
-      p = JSON.parse(ev.data);
-    } catch {
-      return;
-    }
+  const stop = () => {
+    stopped = true;
+    if (watchdog) clearTimeout(watchdog);
+    es?.close();
+    es = null;
+  };
+
+  // Returns true once a terminal state has been handled.
+  const handleSnap = (p: JobProgress): boolean => {
+    if (stopped) return true;
     handlers.onProgress(p);
     if (p.stage === "done" && p.job) {
-      finished = true;
-      es.close();
+      stop();
       handlers.onDone(p.job);
-    } else if (p.stage === "error") {
-      finished = true;
-      es.close();
+      return true;
+    }
+    if (p.stage === "error") {
+      stop();
       handlers.onError(p.error || "Transcription failed");
+      return true;
     }
+    return false;
   };
 
-  es.onerror = () => {
-    if (finished) return;
-    es.close();
-    // The job keeps running server-side; poll until it lands on disk.
-    pollUntilDone(jobId, handlers);
-  };
-
-  return () => {
-    finished = true;
-    es.close();
-  };
-}
-
-async function pollUntilDone(jobId: string, handlers: SubscribeHandlers): Promise<void> {
-  const deadline = Date.now() + 10 * 60 * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 2500));
-    try {
-      const job = await fetchJob(jobId);
-      handlers.onDone(job);
-      return;
-    } catch {
-      /* not finished yet */
+  async function pollLoop() {
+    if (stopped || polling) return;
+    polling = true;
+    if (watchdog) clearTimeout(watchdog);
+    es?.close();
+    es = null;
+    const deadline = Date.now() + 30 * 60 * 1000;
+    while (!stopped && Date.now() < deadline) {
+      try {
+        const res = await fetch(api(`jobs/${jobId}/status`));
+        if (res.ok && handleSnap((await res.json()) as JobProgress)) return;
+      } catch {
+        /* transient — keep polling */
+      }
+      await new Promise((r) => setTimeout(r, 1500));
     }
+    if (!stopped) handlers.onError("Lost connection and the job did not finish in time");
   }
-  handlers.onError("Lost connection to the server and the job did not finish in time");
+
+  es = new EventSource(api(`jobs/${jobId}/events`));
+  // If SSE delivers nothing shortly after connecting, assume it's blocked/buffered.
+  watchdog = setTimeout(pollLoop, 4000);
+  es.onmessage = (ev) => {
+    if (watchdog) clearTimeout(watchdog);
+    try {
+      handleSnap(JSON.parse(ev.data) as JobProgress);
+    } catch {
+      /* ignore malformed frame */
+    }
+  };
+  es.onerror = () => {
+    if (!stopped) pollLoop();
+  };
+
+  return stop;
 }
 
 export async function fetchHistory(): Promise<Job[]> {
@@ -176,4 +200,11 @@ export async function fetchHealth(): Promise<HealthInfo> {
 
 export function downloadUrl(id: string, fmt: "txt" | "srt" | "vtt" | "json"): string {
   return api(`jobs/${id}/download/${fmt}`);
+}
+
+/** Fetch the raw text of a generated subtitle file (for in-UI preview). */
+export async function fetchSubtitle(id: string, fmt: "srt" | "vtt"): Promise<string> {
+  const res = await fetch(downloadUrl(id, fmt));
+  if (!res.ok) throw new Error(`Failed to load .${fmt}`);
+  return res.text();
 }

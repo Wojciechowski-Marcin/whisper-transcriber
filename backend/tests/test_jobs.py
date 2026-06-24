@@ -87,6 +87,21 @@ async def test_run_job_reports_conversion_error(monkeypatch, tmp_path):
     assert "bad media" in state.error
 
 
+def test_history_lists_running_jobs(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "store", main.JobStore(str(tmp_path)))
+    job = main.registry.create(filename="meeting.mp4")
+    main.registry.update(job.id, stage="transcribing", pct=42.0)
+
+    client = TestClient(main.app)
+    resp = client.get("/api/history")
+    assert resp.status_code == 200
+    mine = [i for i in resp.json() if i["id"] == job.id]
+    assert mine, "running job should appear in history"
+    assert mine[0]["status"] == "running"
+    assert mine[0]["stage"] == "transcribing"
+    assert mine[0]["filename"] == "meeting.mp4"
+
+
 def test_sse_endpoint_streams_terminal_state():
     job = main.registry.create()
     main.registry.update(

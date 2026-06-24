@@ -16,7 +16,9 @@ class Settings(BaseSettings):
 
     # App behaviour
     max_upload_mb: int = 200
-    request_timeout: int = 600
+    # Upstream request timeout (s). Diarization (esp. on CPU) is slow, so this is
+    # generous; raise it further for very long recordings.
+    request_timeout: int = 1800
     output_dir: str = "/data/outputs"
     allowed_origins: str = "*"
 

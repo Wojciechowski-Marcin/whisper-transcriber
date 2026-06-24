@@ -193,7 +193,14 @@ async def _post_to_upstream(
             # service); generic OpenAI/Groq endpoints ignore the extra field.
             form["diarize"] = "true"
         headers = {"Authorization": f"Bearer {settings.whisper_api_key}"}
-        async with httpx.AsyncClient(timeout=settings.request_timeout) as client:
+        # Fast connect (fail quickly if the endpoint is down) but a long/unbounded
+        # read: diarization on CPU can run for a long time and must not ReadTimeout.
+        # request_timeout <= 0 means wait indefinitely.
+        read_timeout = settings.request_timeout if settings.request_timeout > 0 else None
+        timeout = httpx.Timeout(
+            connect=15.0, read=read_timeout, write=read_timeout, pool=read_timeout
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 settings.whisper_api_url, files=files, data=form, headers=headers
             )

@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
-import { Job, Segment, downloadUrl } from "../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { Job, Segment, downloadUrl, fetchSubtitle } from "../lib/api";
 import { formatDuration } from "../lib/format";
 
 interface Props {
   job: Job;
 }
+
+type View = "transcript" | "srt" | "vtt";
 
 function DownloadButton({ id, fmt }: { id: string; fmt: "txt" | "srt" | "vtt" }) {
   return (
@@ -47,6 +49,29 @@ function groupTurns(segments: Segment[]): Turn[] {
 
 export default function JobResult({ job }: Props) {
   const [copied, setCopied] = useState(false);
+  const [view, setView] = useState<View>("transcript");
+  const [subs, setSubs] = useState<Partial<Record<View, string>>>({});
+  const [subError, setSubError] = useState<string | null>(null);
+
+  // Reset view state whenever a different job is shown.
+  useEffect(() => {
+    setView("transcript");
+    setSubs({});
+    setSubError(null);
+  }, [job.id]);
+
+  // Lazily fetch the subtitle text when its tab is first opened.
+  useEffect(() => {
+    if (view === "transcript" || subs[view] !== undefined) return;
+    let cancelled = false;
+    setSubError(null);
+    fetchSubtitle(job.id, view)
+      .then((text) => !cancelled && setSubs((s) => ({ ...s, [view]: text })))
+      .catch((e) => !cancelled && setSubError((e as Error).message));
+    return () => {
+      cancelled = true;
+    };
+  }, [view, job.id, subs]);
 
   const turns = useMemo(
     () => (job.has_speakers && job.segments ? groupTurns(job.segments) : null),
@@ -61,10 +86,27 @@ export default function JobResult({ job }: Props) {
     return map;
   }, [turns]);
 
+  const currentText = view === "transcript" ? job.text ?? "" : subs[view] ?? "";
+
   async function copy() {
-    await navigator.clipboard.writeText(job.text ?? "");
+    await navigator.clipboard.writeText(currentText);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  }
+
+  function TabButton({ value, label }: { value: View; label: string }) {
+    const active = view === value;
+    return (
+      <button
+        onClick={() => setView(value)}
+        className={[
+          "rounded-md px-3 py-1 text-sm font-medium transition",
+          active ? "bg-sky-600 text-white" : "bg-slate-800 text-slate-300 hover:bg-slate-700",
+        ].join(" ")}
+      >
+        {label}
+      </button>
+    );
   }
 
   return (
@@ -80,22 +122,46 @@ export default function JobResult({ job }: Props) {
         )}
       </div>
 
-      {turns ? (
-        <div className="max-h-80 space-y-3 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm">
-          {turns.map((t, i) => (
-            <div key={i}>
-              <span className={`font-semibold ${speakerColor.get(t.speaker) ?? "text-slate-300"}`}>
-                {t.speaker}
-              </span>
-              <span className="text-slate-100">: {t.text}</span>
-            </div>
-          ))}
+      {job.has_segments && (
+        <div className="mb-3 flex items-center gap-2">
+          <TabButton value="transcript" label="Transcript" />
+          <TabButton value="srt" label=".srt" />
+          <TabButton value="vtt" label=".vtt" />
+        </div>
+      )}
+
+      {view === "transcript" ? (
+        turns ? (
+          <div className="max-h-80 space-y-3 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm">
+            {turns.map((t, i) => (
+              <div key={i}>
+                <span className={`font-semibold ${speakerColor.get(t.speaker) ?? "text-slate-300"}`}>
+                  {t.speaker}
+                </span>
+                <span className="text-slate-100">: {t.text}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <textarea
+            readOnly
+            value={job.text ?? ""}
+            className="h-48 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-slate-100 focus:outline-none"
+          />
+        )
+      ) : subError ? (
+        <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-300">
+          {subError}
+        </div>
+      ) : subs[view] === undefined ? (
+        <div className="flex h-48 items-center justify-center rounded-lg border border-slate-700 bg-slate-950 text-sm text-slate-500">
+          Loading {view.toUpperCase()} preview…
         </div>
       ) : (
         <textarea
           readOnly
-          value={job.text ?? ""}
-          className="h-48 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-slate-100 focus:outline-none"
+          value={subs[view]}
+          className="h-64 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-relaxed text-slate-100 focus:outline-none"
         />
       )}
 
@@ -104,7 +170,7 @@ export default function JobResult({ job }: Props) {
           onClick={copy}
           className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium hover:bg-sky-500"
         >
-          {copied ? "Copied!" : "Copy"}
+          {copied ? "Copied!" : view === "transcript" ? "Copy" : `Copy .${view}`}
         </button>
         <DownloadButton id={job.id} fmt="txt" />
         {job.has_segments ? (
