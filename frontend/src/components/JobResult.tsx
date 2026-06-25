@@ -19,14 +19,14 @@ function DownloadButton({ id, fmt }: { id: string; fmt: "txt" | "srt" | "vtt" })
   );
 }
 
-// Stable palette keyed by speaker label.
+// Stable text/border palette keyed by speaker label.
 const SPEAKER_COLORS = [
-  "text-sky-300",
-  "text-emerald-300",
-  "text-amber-300",
-  "text-fuchsia-300",
-  "text-rose-300",
-  "text-indigo-300",
+  { text: "text-sky-300", border: "border-sky-400/60" },
+  { text: "text-emerald-300", border: "border-emerald-400/60" },
+  { text: "text-amber-300", border: "border-amber-400/60" },
+  { text: "text-fuchsia-300", border: "border-fuchsia-400/60" },
+  { text: "text-rose-300", border: "border-rose-400/60" },
+  { text: "text-indigo-300", border: "border-indigo-400/60" },
 ];
 
 interface Turn {
@@ -47,18 +47,50 @@ function groupTurns(segments: Segment[]): Turn[] {
   return turns;
 }
 
+function namesKey(jobId: string): string {
+  return `speakerNames:${jobId}`;
+}
+
+function loadNames(jobId: string): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(namesKey(jobId)) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
 export default function JobResult({ job }: Props) {
   const [copied, setCopied] = useState(false);
   const [view, setView] = useState<View>("transcript");
   const [subs, setSubs] = useState<Partial<Record<View, string>>>({});
   const [subError, setSubError] = useState<string | null>(null);
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<string | null>(null);
 
   // Reset view state whenever a different job is shown.
   useEffect(() => {
     setView("transcript");
     setSubs({});
     setSubError(null);
+    setNames(loadNames(job.id));
+    setEditing(null);
   }, [job.id]);
+
+  function renameSpeaker(label: string, value: string) {
+    const trimmed = value.trim();
+    setNames((prev) => {
+      const next = { ...prev };
+      if (trimmed && trimmed !== label) next[label] = trimmed;
+      else delete next[label];
+      localStorage.setItem(namesKey(job.id), JSON.stringify(next));
+      return next;
+    });
+    setEditing(null);
+  }
+
+  function displayName(label: string): string {
+    return names[label] ?? label;
+  }
 
   // Lazily fetch the subtitle text when its tab is first opened.
   useEffect(() => {
@@ -78,7 +110,7 @@ export default function JobResult({ job }: Props) {
     [job],
   );
   const speakerColor = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<string, { text: string; border: string }>();
     let i = 0;
     for (const t of turns ?? []) {
       if (!map.has(t.speaker)) map.set(t.speaker, SPEAKER_COLORS[i++ % SPEAKER_COLORS.length]);
@@ -132,15 +164,35 @@ export default function JobResult({ job }: Props) {
 
       {view === "transcript" ? (
         turns ? (
-          <div className="max-h-80 space-y-3 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm">
-            {turns.map((t, i) => (
-              <div key={i}>
-                <span className={`font-semibold ${speakerColor.get(t.speaker) ?? "text-slate-300"}`}>
-                  {t.speaker}
-                </span>
-                <span className="text-slate-100">: {t.text}</span>
-              </div>
-            ))}
+          <div className="max-h-[34rem] space-y-4 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 p-4">
+            {turns.map((t, i) => {
+              const color = speakerColor.get(t.speaker);
+              return (
+                <div key={i} className={`border-l-2 pl-3 ${color?.border ?? "border-slate-700"}`}>
+                  {editing === t.speaker ? (
+                    <input
+                      autoFocus
+                      defaultValue={displayName(t.speaker)}
+                      onBlur={(e) => renameSpeaker(t.speaker, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        if (e.key === "Escape") setEditing(null);
+                      }}
+                      className="mb-1 rounded border border-sky-500 bg-slate-800 px-2 py-0.5 text-base font-semibold text-slate-100 focus:outline-none"
+                    />
+                  ) : (
+                    <button
+                      onClick={() => setEditing(t.speaker)}
+                      title="Click to rename"
+                      className={`mb-1 block font-semibold ${color?.text ?? "text-slate-300"} hover:underline`}
+                    >
+                      {displayName(t.speaker)}
+                    </button>
+                  )}
+                  <p className="text-base leading-relaxed text-slate-100">{t.text}</p>
+                </div>
+              );
+            })}
           </div>
         ) : (
           <textarea
