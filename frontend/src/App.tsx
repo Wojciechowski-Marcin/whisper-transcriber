@@ -36,6 +36,8 @@ export default function App() {
   const [history, setHistory] = useState<Job[]>([]);
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [diarize, setDiarize] = useState(false);
+  const [minSpeakers, setMinSpeakers] = useState<number | null>(null);
+  const [maxSpeakers, setMaxSpeakers] = useState<number | null>(null);
   const trackedByJobId = useRef<Map<string, string>>(new Map()); // jobId -> localId
   const trackedRef = useRef<Record<string, Tracked>>({});
   trackedRef.current = tracked;
@@ -158,7 +160,15 @@ export default function App() {
         },
       }));
       try {
-        const jobId = await startJob(file, { diarize }, (pct) => patch(localId, { uploadPct: pct }));
+        const jobId = await startJob(
+          file,
+          {
+            diarize,
+            minSpeakers: minSpeakers ?? undefined,
+            maxSpeakers: maxSpeakers ?? undefined,
+          },
+          (pct) => patch(localId, { uploadPct: pct }),
+        );
         patch(localId, { jobId });
         trackJob(localId, jobId, startedAt, file.name);
         refreshHistory(); // surface the new queued job in the list immediately
@@ -224,6 +234,10 @@ export default function App() {
             disabled={false}
             diarize={diarize}
             onDiarizeChange={setDiarize}
+            minSpeakers={minSpeakers}
+            onMinSpeakersChange={setMinSpeakers}
+            maxSpeakers={maxSpeakers}
+            onMaxSpeakersChange={setMaxSpeakers}
             onSelect={handleFiles}
           />
 

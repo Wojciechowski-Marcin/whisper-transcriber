@@ -89,6 +89,8 @@ async def run_job(
     filename: str,
     language: Optional[str],
     diarize: bool,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
 ) -> None:
     """Background pipeline: convert -> transcribe -> persist, reporting stages
     to the registry so SSE subscribers can follow along."""
@@ -115,6 +117,8 @@ async def run_job(
             settings=settings,
             language=language,
             diarize=diarize,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
             on_convert_progress=on_convert_progress,
             on_transcribe_start=on_transcribe_start,
         )
@@ -151,6 +155,8 @@ async def transcribe(
     file: UploadFile = File(...),
     language: Optional[str] = Form(None),
     diarize: bool = Form(False),
+    min_speakers: Optional[int] = Form(None),
+    max_speakers: Optional[int] = Form(None),
 ):
     data = await file.read()
     if not data:
@@ -170,6 +176,8 @@ async def transcribe(
             "filename": filename,
             "language": language,
             "diarize": diarize,
+            "min_speakers": min_speakers,
+            "max_speakers": max_speakers,
         }
     )
     registry.update(

@@ -4,15 +4,34 @@ interface Props {
   disabled: boolean;
   diarize: boolean;
   onDiarizeChange: (value: boolean) => void;
+  minSpeakers: number | null;
+  onMinSpeakersChange: (value: number | null) => void;
+  maxSpeakers: number | null;
+  onMaxSpeakersChange: (value: number | null) => void;
   onSelect: (files: File[]) => void;
 }
 
-export default function Dropzone({ disabled, diarize, onDiarizeChange, onSelect }: Props) {
+export default function Dropzone({
+  disabled,
+  diarize,
+  onDiarizeChange,
+  minSpeakers,
+  onMinSpeakersChange,
+  maxSpeakers,
+  onMaxSpeakersChange,
+  onSelect,
+}: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   function handleFiles(files: FileList | null) {
     if (files && files.length > 0) onSelect(Array.from(files));
+  }
+
+  function parseCount(raw: string): number | null {
+    if (!raw.trim()) return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
   }
 
   return (
@@ -54,17 +73,49 @@ export default function Dropzone({ disabled, diarize, onDiarizeChange, onSelect 
         </p>
       </div>
 
-      <label className="flex items-center gap-2 text-sm text-slate-300 select-none">
-        <input
-          type="checkbox"
-          checked={diarize}
-          disabled={disabled}
-          onChange={(e) => onDiarizeChange(e.target.checked)}
-          className="h-4 w-4 rounded border-slate-600 bg-slate-800 accent-sky-500"
-        />
-        Detect speakers (diarize)
-        <span className="text-xs text-slate-500">— requires a diarization-capable endpoint</span>
-      </label>
+      <div className="space-y-2">
+        <label className="flex items-center gap-2 text-sm text-slate-300 select-none">
+          <input
+            type="checkbox"
+            checked={diarize}
+            disabled={disabled}
+            onChange={(e) => onDiarizeChange(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-600 bg-slate-800 accent-sky-500"
+          />
+          Detect speakers (diarize)
+          <span className="text-xs text-slate-500">— requires a diarization-capable endpoint</span>
+        </label>
+
+        {diarize && (
+          <div className="flex items-center gap-3 pl-6 text-sm text-slate-300">
+            <label className="flex items-center gap-1.5">
+              Speakers
+              <input
+                type="number"
+                min={1}
+                placeholder="min"
+                value={minSpeakers ?? ""}
+                disabled={disabled}
+                onChange={(e) => onMinSpeakersChange(parseCount(e.target.value))}
+                className="w-16 rounded border border-slate-600 bg-slate-800 px-2 py-1 text-sm"
+              />
+            </label>
+            <span className="text-slate-500">to</span>
+            <input
+              type="number"
+              min={1}
+              placeholder="max"
+              value={maxSpeakers ?? ""}
+              disabled={disabled}
+              onChange={(e) => onMaxSpeakersChange(parseCount(e.target.value))}
+              className="w-16 rounded border border-slate-600 bg-slate-800 px-2 py-1 text-sm"
+            />
+            <span className="text-xs text-slate-500">
+              optional — bounds clustering, prevents over-detection on long/noisy audio
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

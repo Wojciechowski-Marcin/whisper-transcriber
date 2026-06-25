@@ -182,6 +182,8 @@ async def _post_to_upstream(
     settings: Settings,
     language: Optional[str],
     diarize: bool,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
 ) -> TranscriptionResult:
     with open(wav_path, "rb") as wav:
         files = {"file": ("audio.wav", wav, "audio/wav")}
@@ -190,8 +192,15 @@ async def _post_to_upstream(
             form["language"] = language
         if diarize:
             # Honoured by diarization-capable endpoints (e.g. the homelab
-            # service); generic OpenAI/Groq endpoints ignore the extra field.
+            # service); generic OpenAI/Groq endpoints ignore the extra fields.
             form["diarize"] = "true"
+            # Bounding the speaker count keeps clustering from running away on
+            # long/noisy audio (observed: 1200+ spurious speakers on an
+            # unbounded ~105 min recording that should have had ~5).
+            if min_speakers is not None:
+                form["min_speakers"] = str(min_speakers)
+            if max_speakers is not None:
+                form["max_speakers"] = str(max_speakers)
         headers = {"Authorization": f"Bearer {settings.whisper_api_key}"}
         # Fast connect (fail quickly if the endpoint is down) but a long/unbounded
         # read: diarization on CPU can run for a long time and must not ReadTimeout.
@@ -221,6 +230,8 @@ async def transcribe_upload(
     settings: Settings,
     language: Optional[str] = None,
     diarize: bool = False,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
     on_convert_progress: Optional[ProgressCallback] = None,
     on_transcribe_start: Optional[Callable[[Optional[float]], None]] = None,
 ) -> TranscriptionResult:
@@ -240,7 +251,9 @@ async def transcribe_upload(
         if on_transcribe_start is not None:
             on_transcribe_start(duration)
 
-        result = await _post_to_upstream(wav_path, settings, language, diarize)
+        result = await _post_to_upstream(
+            wav_path, settings, language, diarize, min_speakers, max_speakers
+        )
         if result.duration is None:
             result.duration = duration
         return result

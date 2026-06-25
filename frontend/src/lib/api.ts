@@ -53,6 +53,8 @@ export interface JobProgress {
 export interface StartOptions {
   language?: string;
   diarize?: boolean;
+  minSpeakers?: number;
+  maxSpeakers?: number;
 }
 
 // Resolve API paths against the app's base URL so it works whether served at
@@ -71,6 +73,8 @@ export function startJob(
     form.append("file", file);
     if (opts.language) form.append("language", opts.language);
     if (opts.diarize) form.append("diarize", "true");
+    if (opts.minSpeakers != null) form.append("min_speakers", String(opts.minSpeakers));
+    if (opts.maxSpeakers != null) form.append("max_speakers", String(opts.maxSpeakers));
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", api("transcribe"));
