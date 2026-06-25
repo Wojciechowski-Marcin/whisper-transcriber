@@ -22,9 +22,16 @@ class Settings(BaseSettings):
     output_dir: str = "/data/outputs"
     allowed_origins: str = "*"
 
-    # Ollama LLM endpoint (summarization + speaker-name suggestion)
+    # Ollama LLM endpoint (summarization + speaker-name suggestion).
+    # An 8B-class instruct model is the sweet spot: strong enough for
+    # structured multi-section summaries while a q4_K_M quant still fits
+    # entirely in 8 GB VRAM (no CPU spill).
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.1"
+    ollama_model: str = "llama3.1:8b-instruct-q4_K_M"
+    # Context window (tokens) requested per LLM call. Must comfortably exceed
+    # one chunk (~summary_chunk_chars/3 tokens) plus prompt + output, or Ollama
+    # silently truncates the input and summaries lose information.
+    ollama_num_ctx: int = 8192
     # Map-reduce threshold/chunk size (chars) — keeps each LLM call within
     # context regardless of transcript length.
     summary_chunk_chars: int = 12000

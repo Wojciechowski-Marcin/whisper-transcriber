@@ -181,6 +181,7 @@ async def run_summarize_job(task_id: str, job_id: str, preset: str) -> None:
             text=job.get("text") or "",
             has_speakers=job.get("has_speakers", False),
             preset=preset,
+            language=job.get("language"),
             on_progress=on_progress,
         )
         store.save_summary(job_id, preset, markdown)
