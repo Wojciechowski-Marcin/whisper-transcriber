@@ -207,7 +207,7 @@ export default function App() {
   const activeId = active?.id ?? inFlight[0]?.jobId ?? null;
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-10">
+    <div className="mx-auto max-w-6xl px-4 py-10">
       <header className="mb-8 flex items-end justify-between">
         <div>
           <h1 className="text-2xl font-bold">🎙️ Whisper Transcriber</h1>
@@ -264,8 +264,6 @@ export default function App() {
               {error}
             </div>
           )}
-
-          {active && <JobResult job={active} />}
         </main>
 
         <aside>
@@ -280,6 +278,12 @@ export default function App() {
           />
         </aside>
       </div>
+
+      {active && (
+        <div className="mt-8">
+          <JobResult job={active} />
+        </div>
+      )}
     </div>
   );
 }

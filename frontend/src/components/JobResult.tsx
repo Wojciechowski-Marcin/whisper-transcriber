@@ -19,14 +19,21 @@ function DownloadButton({ id, fmt }: { id: string; fmt: "txt" | "srt" | "vtt" })
   );
 }
 
-// Stable text/border palette keyed by speaker label.
+// Stable text/border/dot palette keyed by speaker label — 12 entries to
+// cover the UI's supported speaker cap (see Dropzone's min/max_speakers).
 const SPEAKER_COLORS = [
-  { text: "text-sky-300", border: "border-sky-400/60" },
-  { text: "text-emerald-300", border: "border-emerald-400/60" },
-  { text: "text-amber-300", border: "border-amber-400/60" },
-  { text: "text-fuchsia-300", border: "border-fuchsia-400/60" },
-  { text: "text-rose-300", border: "border-rose-400/60" },
-  { text: "text-indigo-300", border: "border-indigo-400/60" },
+  { text: "text-sky-300", border: "border-sky-400/60", dot: "bg-sky-400" },
+  { text: "text-emerald-300", border: "border-emerald-400/60", dot: "bg-emerald-400" },
+  { text: "text-amber-300", border: "border-amber-400/60", dot: "bg-amber-400" },
+  { text: "text-fuchsia-300", border: "border-fuchsia-400/60", dot: "bg-fuchsia-400" },
+  { text: "text-rose-300", border: "border-rose-400/60", dot: "bg-rose-400" },
+  { text: "text-indigo-300", border: "border-indigo-400/60", dot: "bg-indigo-400" },
+  { text: "text-lime-300", border: "border-lime-400/60", dot: "bg-lime-400" },
+  { text: "text-cyan-300", border: "border-cyan-400/60", dot: "bg-cyan-400" },
+  { text: "text-orange-300", border: "border-orange-400/60", dot: "bg-orange-400" },
+  { text: "text-violet-300", border: "border-violet-400/60", dot: "bg-violet-400" },
+  { text: "text-teal-300", border: "border-teal-400/60", dot: "bg-teal-400" },
+  { text: "text-pink-300", border: "border-pink-400/60", dot: "bg-pink-400" },
 ];
 
 interface Turn {
@@ -65,7 +72,6 @@ export default function JobResult({ job }: Props) {
   const [subs, setSubs] = useState<Partial<Record<View, string>>>({});
   const [subError, setSubError] = useState<string | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
-  const [editing, setEditing] = useState<string | null>(null);
 
   // Reset view state whenever a different job is shown.
   useEffect(() => {
@@ -73,19 +79,16 @@ export default function JobResult({ job }: Props) {
     setSubs({});
     setSubError(null);
     setNames(loadNames(job.id));
-    setEditing(null);
   }, [job.id]);
 
   function renameSpeaker(label: string, value: string) {
-    const trimmed = value.trim();
     setNames((prev) => {
       const next = { ...prev };
-      if (trimmed && trimmed !== label) next[label] = trimmed;
+      if (value && value !== label) next[label] = value;
       else delete next[label];
       localStorage.setItem(namesKey(job.id), JSON.stringify(next));
       return next;
     });
-    setEditing(null);
   }
 
   function displayName(label: string): string {
@@ -110,13 +113,14 @@ export default function JobResult({ job }: Props) {
     [job],
   );
   const speakerColor = useMemo(() => {
-    const map = new Map<string, { text: string; border: string }>();
+    const map = new Map<string, { text: string; border: string; dot: string }>();
     let i = 0;
     for (const t of turns ?? []) {
       if (!map.has(t.speaker)) map.set(t.speaker, SPEAKER_COLORS[i++ % SPEAKER_COLORS.length]);
     }
     return map;
   }, [turns]);
+  const uniqueSpeakers = useMemo(() => Array.from(speakerColor.keys()), [speakerColor]);
 
   const currentText = view === "transcript" ? job.text ?? "" : subs[view] ?? "";
 
@@ -142,7 +146,7 @@ export default function JobResult({ job }: Props) {
   }
 
   return (
-    <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-5">
+    <div className="w-full rounded-xl border border-slate-700 bg-slate-900/60 p-5">
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-400">
         <span className="font-medium text-slate-200">{job.filename}</span>
         <span>Language: {job.language ?? "—"}</span>
@@ -162,6 +166,28 @@ export default function JobResult({ job }: Props) {
         </div>
       )}
 
+      {uniqueSpeakers.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-slate-700 bg-slate-950/50 p-3">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Rename speakers
+          </span>
+          {uniqueSpeakers.map((label) => {
+            const color = speakerColor.get(label);
+            return (
+              <div key={label} className="flex items-center gap-1.5">
+                <span className={`h-2 w-2 rounded-full ${color?.dot ?? "bg-slate-500"}`} />
+                <input
+                  value={displayName(label)}
+                  onChange={(e) => renameSpeaker(label, e.target.value)}
+                  placeholder={label}
+                  className="w-32 rounded border border-slate-600 bg-slate-800 px-2 py-1 text-sm text-slate-100 focus:border-sky-400 focus:outline-none"
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {view === "transcript" ? (
         turns ? (
           <div className="max-h-[34rem] space-y-4 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 p-4">
@@ -169,26 +195,9 @@ export default function JobResult({ job }: Props) {
               const color = speakerColor.get(t.speaker);
               return (
                 <div key={i} className={`border-l-2 pl-3 ${color?.border ?? "border-slate-700"}`}>
-                  {editing === t.speaker ? (
-                    <input
-                      autoFocus
-                      defaultValue={displayName(t.speaker)}
-                      onBlur={(e) => renameSpeaker(t.speaker, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                        if (e.key === "Escape") setEditing(null);
-                      }}
-                      className="mb-1 rounded border border-sky-500 bg-slate-800 px-2 py-0.5 text-base font-semibold text-slate-100 focus:outline-none"
-                    />
-                  ) : (
-                    <button
-                      onClick={() => setEditing(t.speaker)}
-                      title="Click to rename"
-                      className={`mb-1 block font-semibold ${color?.text ?? "text-slate-300"} hover:underline`}
-                    >
-                      {displayName(t.speaker)}
-                    </button>
-                  )}
+                  <span className={`mb-1 block font-semibold ${color?.text ?? "text-slate-300"}`}>
+                    {displayName(t.speaker)}
+                  </span>
                   <p className="text-base leading-relaxed text-slate-100">{t.text}</p>
                 </div>
               );

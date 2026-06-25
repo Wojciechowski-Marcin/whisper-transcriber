@@ -28,10 +28,13 @@ export default function Dropzone({
     if (files && files.length > 0) onSelect(Array.from(files));
   }
 
+  const MAX_SPEAKERS = 12;
+
   function parseCount(raw: string): number | null {
     if (!raw.trim()) return null;
     const n = parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0 ? n : null;
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.min(n, MAX_SPEAKERS);
   }
 
   return (
@@ -93,6 +96,7 @@ export default function Dropzone({
               <input
                 type="number"
                 min={1}
+                max={MAX_SPEAKERS}
                 placeholder="min"
                 value={minSpeakers ?? ""}
                 disabled={disabled}
@@ -104,6 +108,7 @@ export default function Dropzone({
             <input
               type="number"
               min={1}
+              max={MAX_SPEAKERS}
               placeholder="max"
               value={maxSpeakers ?? ""}
               disabled={disabled}
@@ -111,7 +116,7 @@ export default function Dropzone({
               className="w-16 rounded border border-slate-600 bg-slate-800 px-2 py-1 text-sm"
             />
             <span className="text-xs text-slate-500">
-              optional — bounds clustering, prevents over-detection on long/noisy audio
+              optional — bounds clustering (max {MAX_SPEAKERS}), prevents over-detection on long/noisy audio
             </span>
           </div>
         )}
