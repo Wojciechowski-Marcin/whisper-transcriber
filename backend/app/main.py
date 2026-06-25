@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .jobs import JobRegistry
+from .llm import LLMError, SUMMARY_PRESETS, summarize, suggest_speaker_names
 from .storage import JobStore
 from .subtitles import to_srt, to_text, to_vtt
 from .transcribe import ConversionError, UpstreamError, transcribe_upload
@@ -36,10 +37,16 @@ job_queue: "asyncio.Queue[dict]" = asyncio.Queue()
 async def _worker() -> None:
     while True:
         item = await job_queue.get()
+        kind = item.pop("kind", "transcribe")
         try:
-            await run_job(**item)
+            if kind == "transcribe":
+                await run_job(**item)
+            elif kind == "summarize":
+                await run_summarize_job(**item)
+            elif kind == "suggest_names":
+                await run_suggest_names_job(**item)
         except Exception:  # noqa: BLE001 — never let one bad job kill the worker
-            logger.exception("Unhandled error processing job %s", item.get("job_id"))
+            logger.exception("Unhandled error processing %s job %s", kind, item.get("task_id"))
         finally:
             job_queue.task_done()
 
@@ -66,6 +73,7 @@ DOWNLOAD_MEDIA = {
     "srt": "application/x-subrip",
     "vtt": "text/vtt",
     "json": "application/json",
+    "md": "text/markdown",
 }
 
 
@@ -150,6 +158,100 @@ async def run_job(
         registry.update(job_id, stage="error", error=f"Internal error: {exc}")
 
 
+async def run_summarize_job(task_id: str, job_id: str, preset: str) -> None:
+    """Background task: summarize a finished transcript via Ollama (map-reduce
+    for long transcripts), reporting chunk progress to the registry."""
+    try:
+        job = store.get(job_id)
+        if job is None:
+            registry.update(task_id, stage="error", error="Transcript not found")
+            return
+        registry.update(task_id, stage="summarizing", pct=None, message="Summarizing…")
+
+        def on_progress(i: int, n: int) -> None:
+            registry.update(
+                task_id,
+                pct=(i / n) * 100 if n else None,
+                message=f"Summarizing chunk {i}/{n}…" if n > 1 else "Summarizing…",
+            )
+
+        markdown = await summarize(
+            settings,
+            segments=job.get("segments") or [],
+            text=job.get("text") or "",
+            has_speakers=job.get("has_speakers", False),
+            preset=preset,
+            on_progress=on_progress,
+        )
+        store.save_summary(job_id, preset, markdown)
+        registry.update(
+            task_id,
+            stage="done",
+            pct=100.0,
+            message="Done",
+            result={"job_id": job_id, "preset": preset, "summary": markdown},
+        )
+    except LLMError as exc:
+        registry.update(task_id, stage="error", error=str(exc))
+    except Exception as exc:  # noqa: BLE001 — surface any failure to the client
+        logger.exception("Summarize task %s failed", task_id)
+        registry.update(task_id, stage="error", error=f"Internal error: {exc}")
+
+
+async def run_suggest_names_job(task_id: str, job_id: str) -> None:
+    try:
+        job = store.get(job_id)
+        if job is None:
+            registry.update(task_id, stage="error", error="Transcript not found")
+            return
+        registry.update(task_id, stage="suggesting", pct=None, message="Inferring speaker names…")
+        names = await suggest_speaker_names(
+            settings, segments=job.get("segments") or [], text=job.get("text") or ""
+        )
+        registry.update(task_id, stage="done", pct=100.0, message="Done", result={"names": names})
+    except LLMError as exc:
+        registry.update(task_id, stage="error", error=str(exc))
+    except Exception as exc:  # noqa: BLE001 — surface any failure to the client
+        logger.exception("Suggest-names task %s failed", task_id)
+        registry.update(task_id, stage="error", error=f"Internal error: {exc}")
+
+
+@app.post("/api/jobs/{job_id}/summarize", status_code=202)
+async def summarize_job(job_id: str, body: dict):
+    preset = body.get("preset")
+    if preset not in SUMMARY_PRESETS:
+        raise HTTPException(status_code=422, detail=f"Unknown preset: {preset!r}")
+    if store.get(job_id) is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    task = registry.create(filename=job_id)
+    job_queue.put_nowait(
+        {"kind": "summarize", "task_id": task.id, "job_id": job_id, "preset": preset}
+    )
+    return {"task_id": task.id}
+
+
+@app.post("/api/jobs/{job_id}/suggest-names", status_code=202)
+async def suggest_names_endpoint(job_id: str):
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.get("has_speakers"):
+        raise HTTPException(status_code=404, detail="Job has no speaker labels")
+
+    task = registry.create(filename=job_id)
+    job_queue.put_nowait({"kind": "suggest_names", "task_id": task.id, "job_id": job_id})
+    return {"task_id": task.id}
+
+
+@app.get("/api/jobs/{job_id}/summary")
+async def get_summary(job_id: str):
+    summary = store.get_summary(job_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="No summary available")
+    return summary
+
+
 @app.post("/api/transcribe", status_code=202)
 async def transcribe(
     file: UploadFile = File(...),
@@ -171,6 +273,7 @@ async def transcribe(
     job = registry.create(filename=filename)
     job_queue.put_nowait(
         {
+            "kind": "transcribe",
             "job_id": job.id,
             "data": data,
             "filename": filename,

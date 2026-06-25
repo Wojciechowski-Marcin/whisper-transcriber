@@ -1,6 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
-import { Job, Segment, downloadUrl, fetchSubtitle } from "../lib/api";
+import ReactMarkdown from "react-markdown";
+import {
+  Job,
+  Segment,
+  SuggestNamesTaskResult,
+  SummarizeTaskResult,
+  SummaryPreset,
+  downloadUrl,
+  fetchSubtitle,
+  fetchSummary,
+  subscribeJob,
+  suggestNames,
+  summarizeJob,
+} from "../lib/api";
 import { formatDuration } from "../lib/format";
+
+const SUMMARY_PRESET_OPTIONS: { value: SummaryPreset; label: string }[] = [
+  { value: "dnd", label: "D&D session recap" },
+  { value: "meeting", label: "Meeting notes" },
+  { value: "call", label: "Call summary" },
+  { value: "tldr", label: "General TL;DR" },
+];
 
 interface Props {
   job: Job;
@@ -73,13 +93,95 @@ export default function JobResult({ job }: Props) {
   const [subError, setSubError] = useState<string | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
 
+  const [preset, setPreset] = useState<SummaryPreset>("tldr");
+  const [summary, setSummary] = useState<string | null>(null);
+  const [summaryPreset, setSummaryPreset] = useState<SummaryPreset | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
+  const [summaryProgress, setSummaryProgress] = useState<string>("");
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [summaryCopied, setSummaryCopied] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+
   // Reset view state whenever a different job is shown.
   useEffect(() => {
     setView("transcript");
     setSubs({});
     setSubError(null);
     setNames(loadNames(job.id));
-  }, [job.id]);
+    setSummary(null);
+    setSummaryPreset(null);
+    setSummaryError(null);
+    setSuggestError(null);
+    if (job.has_summary) {
+      fetchSummary(job.id)
+        .then((s) => {
+          setSummary(s.summary);
+          setSummaryPreset(s.preset);
+          setPreset(s.preset);
+        })
+        .catch(() => {
+          /* non-fatal — summarize button still works */
+        });
+    }
+  }, [job.id, job.has_summary]);
+
+  function handleSummarize() {
+    setSummarizing(true);
+    setSummaryError(null);
+    setSummaryProgress("Summarizing…");
+    summarizeJob(job.id, preset)
+      .then(({ task_id }) => {
+        subscribeJob<SummarizeTaskResult>(task_id, {
+          onProgress: (p) => setSummaryProgress(p.message || "Summarizing…"),
+          onDone: (result) => {
+            setSummary(result.summary);
+            setSummaryPreset(result.preset);
+            setSummarizing(false);
+          },
+          onError: (msg) => {
+            setSummaryError(msg);
+            setSummarizing(false);
+          },
+        });
+      })
+      .catch((e) => {
+        setSummaryError((e as Error).message);
+        setSummarizing(false);
+      });
+  }
+
+  async function copySummary() {
+    if (!summary) return;
+    await navigator.clipboard.writeText(summary);
+    setSummaryCopied(true);
+    setTimeout(() => setSummaryCopied(false), 1500);
+  }
+
+  function handleSuggestNames() {
+    setSuggesting(true);
+    setSuggestError(null);
+    suggestNames(job.id)
+      .then(({ task_id }) => {
+        subscribeJob<SuggestNamesTaskResult>(task_id, {
+          onProgress: () => {},
+          onDone: (result) => {
+            for (const [label, name] of Object.entries(result.names)) {
+              if (name) renameSpeaker(label, name);
+            }
+            setSuggesting(false);
+          },
+          onError: (msg) => {
+            setSuggestError(msg);
+            setSuggesting(false);
+          },
+        });
+      })
+      .catch((e) => {
+        setSuggestError((e as Error).message);
+        setSuggesting(false);
+      });
+  }
 
   function renameSpeaker(label: string, value: string) {
     setNames((prev) => {
@@ -185,6 +287,68 @@ export default function JobResult({ job }: Props) {
               </div>
             );
           })}
+          <button
+            onClick={handleSuggestNames}
+            disabled={suggesting}
+            className="rounded-md bg-slate-700 px-3 py-1.5 text-xs font-medium hover:bg-slate-600 disabled:opacity-50"
+          >
+            {suggesting ? "Suggesting…" : "Suggest names"}
+          </button>
+          {suggestError && <span className="text-xs text-red-300">{suggestError}</span>}
+        </div>
+      )}
+
+      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/50 p-3">
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Summary
+        </span>
+        <select
+          value={preset}
+          onChange={(e) => setPreset(e.target.value as SummaryPreset)}
+          disabled={summarizing}
+          className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-sm text-slate-100 focus:border-sky-400 focus:outline-none"
+        >
+          {SUMMARY_PRESET_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={handleSummarize}
+          disabled={summarizing}
+          className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium hover:bg-sky-500 disabled:opacity-50"
+        >
+          {summarizing ? "Summarizing…" : "Summarize"}
+        </button>
+        {summarizing && <span className="text-xs text-slate-400">{summaryProgress}</span>}
+        {summaryError && <span className="text-xs text-red-300">{summaryError}</span>}
+      </div>
+
+      {summary && (
+        <div className="mb-3 rounded-lg border border-slate-700 bg-slate-950 p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              {SUMMARY_PRESET_OPTIONS.find((o) => o.value === summaryPreset)?.label ?? "Summary"}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={copySummary}
+                className="rounded-md bg-slate-700 px-3 py-1 text-xs font-medium hover:bg-slate-600"
+              >
+                {summaryCopied ? "Copied!" : "Copy"}
+              </button>
+              <a
+                href={downloadUrl(job.id, "md")}
+                className="rounded-md bg-slate-700 px-3 py-1 text-xs font-medium hover:bg-slate-600"
+              >
+                .md
+              </a>
+            </div>
+          </div>
+          <div className="prose prose-invert prose-sm max-w-none text-slate-100">
+            <ReactMarkdown>{summary}</ReactMarkdown>
+          </div>
         </div>
       )}
 

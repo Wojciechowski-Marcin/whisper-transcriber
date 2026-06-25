@@ -15,12 +15,21 @@ class Settings(BaseSettings):
     whisper_model: str = "whisper-1"
 
     # App behaviour
-    max_upload_mb: int = 200
+    max_upload_mb: int = 1024
     # Upstream request timeout (s). Diarization (esp. on CPU) is slow, so this is
     # generous; raise it further for very long recordings.
     request_timeout: int = 1800
     output_dir: str = "/data/outputs"
     allowed_origins: str = "*"
+
+    # Ollama LLM endpoint (summarization + speaker-name suggestion)
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
+    # Map-reduce threshold/chunk size (chars) — keeps each LLM call within
+    # context regardless of transcript length.
+    summary_chunk_chars: int = 12000
+    # httpx read timeout (s) for LLM calls; 0 = no timeout (long map-reduce runs).
+    llm_timeout: int = 0
 
     # Estimated processing time as a fraction of audio duration. Used only to
     # drive the client-side progress estimate during the (opaque) transcribe

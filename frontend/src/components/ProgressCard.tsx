@@ -17,6 +17,8 @@ const LABELS: Record<string, string> = {
   converting: "Converting audio",
   transcribing: "Transcribing",
   saving: "Saving transcript",
+  summarizing: "Summarizing",
+  suggesting: "Inferring speaker names",
 };
 
 export default function ProgressCard({

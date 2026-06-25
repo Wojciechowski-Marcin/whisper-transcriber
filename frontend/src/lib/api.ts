@@ -23,6 +23,16 @@ export interface Job {
   pct?: number | null;
   message?: string;
   error?: string;
+  has_summary?: boolean;
+  summary?: string;
+  summary_preset?: SummaryPreset;
+}
+
+export type SummaryPreset = "dnd" | "meeting" | "call" | "tldr";
+
+export interface SummaryResult {
+  preset: SummaryPreset;
+  summary: string;
 }
 
 export interface HealthInfo {
@@ -36,10 +46,12 @@ export type Stage =
   | "converting"
   | "transcribing"
   | "saving"
+  | "summarizing"
+  | "suggesting"
   | "done"
   | "error";
 
-export interface JobProgress {
+export interface JobProgress<TResult = Job> {
   id: string;
   stage: Stage;
   pct: number | null;
@@ -47,7 +59,7 @@ export interface JobProgress {
   duration: number | null;
   eta_seconds: number | null;
   error?: string;
-  job?: Job;
+  job?: TResult;
 }
 
 export interface StartOptions {
@@ -103,17 +115,20 @@ export function startJob(
   });
 }
 
-interface SubscribeHandlers {
-  onProgress: (p: JobProgress) => void;
-  onDone: (job: Job) => void;
+interface SubscribeHandlers<TResult = Job> {
+  onProgress: (p: JobProgress<TResult>) => void;
+  onDone: (job: TResult) => void;
   onError: (message: string) => void;
 }
 
-/** Follow a job's progress. Tries SSE first (instant, low-overhead); if no event
- *  arrives quickly (e.g. a proxy buffers the stream) or the stream errors, falls
- *  back to polling the status endpoint so stages still update everywhere.
- *  Returns an unsubscribe fn. */
-export function subscribeJob(jobId: string, handlers: SubscribeHandlers): () => void {
+/** Follow a job's (or LLM task's) progress. Tries SSE first (instant,
+ *  low-overhead); if no event arrives quickly (e.g. a proxy buffers the
+ *  stream) or the stream errors, falls back to polling the status endpoint so
+ *  stages still update everywhere. Returns an unsubscribe fn. */
+export function subscribeJob<TResult = Job>(
+  jobId: string,
+  handlers: SubscribeHandlers<TResult>,
+): () => void {
   let stopped = false;
   let polling = false;
   let es: EventSource | null = null;
@@ -127,7 +142,7 @@ export function subscribeJob(jobId: string, handlers: SubscribeHandlers): () => 
   };
 
   // Returns true once a terminal state has been handled.
-  const handleSnap = (p: JobProgress): boolean => {
+  const handleSnap = (p: JobProgress<TResult>): boolean => {
     if (stopped) return true;
     handlers.onProgress(p);
     if (p.stage === "done" && p.job) {
@@ -153,7 +168,7 @@ export function subscribeJob(jobId: string, handlers: SubscribeHandlers): () => 
     while (!stopped && Date.now() < deadline) {
       try {
         const res = await fetch(api(`jobs/${jobId}/status`));
-        if (res.ok && handleSnap((await res.json()) as JobProgress)) return;
+        if (res.ok && handleSnap((await res.json()) as JobProgress<TResult>)) return;
       } catch {
         /* transient — keep polling */
       }
@@ -168,7 +183,7 @@ export function subscribeJob(jobId: string, handlers: SubscribeHandlers): () => 
   es.onmessage = (ev) => {
     if (watchdog) clearTimeout(watchdog);
     try {
-      handleSnap(JSON.parse(ev.data) as JobProgress);
+      handleSnap(JSON.parse(ev.data) as JobProgress<TResult>);
     } catch {
       /* ignore malformed frame */
     }
@@ -178,6 +193,45 @@ export function subscribeJob(jobId: string, handlers: SubscribeHandlers): () => 
   };
 
   return stop;
+}
+
+export interface SummarizeTaskResult {
+  job_id: string;
+  preset: SummaryPreset;
+  summary: string;
+}
+
+export interface SuggestNamesTaskResult {
+  names: Record<string, string | null>;
+}
+
+/** Queue a summarization task for a finished transcript; follow it with
+ *  subscribeJob (the terminal snapshot's ``job`` field is a SummarizeTaskResult). */
+export async function summarizeJob(
+  jobId: string,
+  preset: SummaryPreset,
+): Promise<{ task_id: string }> {
+  const res = await fetch(api(`jobs/${jobId}/summarize`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ preset }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || "Failed to start summary");
+  return res.json();
+}
+
+/** Queue a speaker-name-suggestion task; follow it with subscribeJob (the
+ *  terminal snapshot's ``job`` field is a SuggestNamesTaskResult). */
+export async function suggestNames(jobId: string): Promise<{ task_id: string }> {
+  const res = await fetch(api(`jobs/${jobId}/suggest-names`), { method: "POST" });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || "Failed to start name suggestion");
+  return res.json();
+}
+
+export async function fetchSummary(jobId: string): Promise<SummaryResult> {
+  const res = await fetch(api(`jobs/${jobId}/summary`));
+  if (!res.ok) throw new Error("No summary available");
+  return res.json();
 }
 
 export async function fetchHistory(): Promise<Job[]> {
@@ -202,7 +256,7 @@ export async function fetchHealth(): Promise<HealthInfo> {
   return res.json();
 }
 
-export function downloadUrl(id: string, fmt: "txt" | "srt" | "vtt" | "json"): string {
+export function downloadUrl(id: string, fmt: "txt" | "srt" | "vtt" | "json" | "md"): string {
   return api(`jobs/${id}/download/${fmt}`);
 }
 

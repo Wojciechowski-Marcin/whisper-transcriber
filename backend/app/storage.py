@@ -16,7 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-FORMATS = {"txt": "transcript.txt", "srt": "transcript.srt", "vtt": "transcript.vtt"}
+FORMATS = {
+    "txt": "transcript.txt",
+    "srt": "transcript.srt",
+    "vtt": "transcript.vtt",
+    "md": "summary.md",
+}
 
 
 def _now_iso() -> str:
@@ -72,6 +77,19 @@ class JobStore:
         (job_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         return {**meta, "text": text, "segments": segments or []}
 
+    def save_summary(self, job_id: str, preset: str, markdown: str) -> None:
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "summary.md").write_text(markdown, encoding="utf-8")
+        (job_dir / "summary.json").write_text(
+            json.dumps({"preset": preset, "created_at": _now_iso()}, indent=2),
+            encoding="utf-8",
+        )
+        meta_file = job_dir / "meta.json"
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        meta["has_summary"] = True
+        meta_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
     def list(self) -> list[dict]:
         jobs: list[dict] = []
         if not self.root.exists():
@@ -101,7 +119,30 @@ class JobStore:
                 meta["segments"] = []
         else:
             meta["segments"] = []
+        summary_file = self._job_dir(job_id) / "summary.json"
+        summary_md = self._job_dir(job_id) / "summary.md"
+        if summary_file.is_file() and summary_md.is_file():
+            try:
+                summary_meta = json.loads(summary_file.read_text(encoding="utf-8"))
+                meta["summary"] = summary_md.read_text(encoding="utf-8")
+                meta["summary_preset"] = summary_meta.get("preset")
+            except (json.JSONDecodeError, OSError):
+                pass
         return meta
+
+    def get_summary(self, job_id: str) -> Optional[dict]:
+        summary_file = self._job_dir(job_id) / "summary.json"
+        summary_md = self._job_dir(job_id) / "summary.md"
+        if not (summary_file.is_file() and summary_md.is_file()):
+            return None
+        try:
+            summary_meta = json.loads(summary_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        return {
+            "preset": summary_meta.get("preset"),
+            "summary": summary_md.read_text(encoding="utf-8"),
+        }
 
     def file_path(self, job_id: str, fmt: str) -> Optional[Path]:
         if fmt == "json":
