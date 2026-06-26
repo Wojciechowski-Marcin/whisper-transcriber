@@ -34,11 +34,40 @@ registry = JobRegistry()
 job_queue: "asyncio.Queue[dict]" = asyncio.Queue()
 
 
+async def _free_other_engine(kind: str) -> None:
+    """Guarantee Whisper and the Ollama LLM are never co-resident in the shared
+    8 GB GPU on the upstream CT — loading both at once OOM-kills it.
+
+    Jobs are already serialized through the single worker, so only one engine is
+    ever *active*; the risk is residency carrying over (Whisper lingers up to 60s
+    after a transcription; Ollama keeps a model ~5 min). So before each job we
+    explicitly evict the *other* engine:
+      - before a transcribe job → unload the LLM from Ollama
+      - before a summarize/suggest job → unload Whisper (+ diarizer)
+    Best-effort: a failure here is logged and the job proceeds (idle-unload is
+    still the backstop)."""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            if kind == "transcribe":
+                # keep_alive=0 with no prompt just evicts the model from VRAM.
+                await client.post(
+                    f"{settings.ollama_url}/api/generate",
+                    json={"model": settings.ollama_model, "keep_alive": 0},
+                )
+            else:  # summarize / suggest_names
+                base = settings.whisper_api_url.rsplit("/v1/", 1)[0]
+                await client.post(f"{base}/unload")
+    except Exception:  # noqa: BLE001 — never block a job on the unload hint
+        logger.warning("VRAM pre-unload before %s job failed; continuing", kind, exc_info=True)
+
+
 async def _worker() -> None:
     while True:
         item = await job_queue.get()
         kind = item.pop("kind", "transcribe")
         try:
+            # Free the other GPU engine before loading this job's engine.
+            await _free_other_engine(kind)
             if kind == "transcribe":
                 await run_job(**item)
             elif kind == "summarize":

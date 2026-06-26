@@ -1,18 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import {
-  Job,
-  Segment,
-  SuggestNamesTaskResult,
-  SummarizeTaskResult,
-  SummaryPreset,
-  downloadUrl,
-  fetchSubtitle,
-  fetchSummary,
-  subscribeJob,
-  suggestNames,
-  summarizeJob,
-} from "../lib/api";
+import { Job, Segment, SummaryPreset, downloadUrl, fetchSubtitle } from "../lib/api";
+import type { NameTaskState, SummaryState } from "../App";
 import { formatDuration } from "../lib/format";
 
 const SUMMARY_PRESET_OPTIONS: { value: SummaryPreset; label: string }[] = [
@@ -24,6 +13,15 @@ const SUMMARY_PRESET_OPTIONS: { value: SummaryPreset; label: string }[] = [
 
 interface Props {
   job: Job;
+  // Summary + speaker-name state is owned by App and keyed by job id, so a task
+  // started here keeps updating *this* document even after the user switches
+  // away, and several jobs can summarize/suggest concurrently.
+  summaryState: SummaryState;
+  onSummarize: (preset: SummaryPreset) => void;
+  names: Record<string, string>;
+  nameTask: NameTaskState;
+  onSuggestNames: () => void;
+  onRenameSpeaker: (label: string, value: string) => void;
 }
 
 type View = "transcript" | "srt" | "vtt";
@@ -74,123 +72,41 @@ function groupTurns(segments: Segment[]): Turn[] {
   return turns;
 }
 
-function namesKey(jobId: string): string {
-  return `speakerNames:${jobId}`;
-}
-
-function loadNames(jobId: string): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(namesKey(jobId)) ?? "{}");
-  } catch {
-    return {};
-  }
-}
-
-export default function JobResult({ job }: Props) {
+export default function JobResult({
+  job,
+  summaryState,
+  onSummarize,
+  names,
+  nameTask,
+  onSuggestNames,
+  onRenameSpeaker,
+}: Props) {
   const [copied, setCopied] = useState(false);
   const [view, setView] = useState<View>("transcript");
   const [subs, setSubs] = useState<Partial<Record<View, string>>>({});
   const [subError, setSubError] = useState<string | null>(null);
-  const [names, setNames] = useState<Record<string, string>>({});
-
-  const [preset, setPreset] = useState<SummaryPreset>("tldr");
-  const [summary, setSummary] = useState<string | null>(null);
-  const [summaryPreset, setSummaryPreset] = useState<SummaryPreset | null>(null);
-  const [summarizing, setSummarizing] = useState(false);
-  const [summaryProgress, setSummaryProgress] = useState<string>("");
-  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [preset, setPreset] = useState<SummaryPreset>(summaryState.preset ?? "tldr");
   const [summaryCopied, setSummaryCopied] = useState(false);
-  const [suggesting, setSuggesting] = useState(false);
-  const [suggestError, setSuggestError] = useState<string | null>(null);
 
-  // Reset view state whenever a different job is shown.
+  const summarizing = summaryState.running;
+  const summary = summaryState.summary;
+  const summaryPreset = summaryState.preset;
+
+  // Reset purely-local view state when a different job is shown, and align the
+  // preset dropdown with whatever summary that job already has.
   useEffect(() => {
     setView("transcript");
     setSubs({});
     setSubError(null);
-    setNames(loadNames(job.id));
-    setSummary(null);
-    setSummaryPreset(null);
-    setSummaryError(null);
-    setSuggestError(null);
-    if (job.has_summary) {
-      fetchSummary(job.id)
-        .then((s) => {
-          setSummary(s.summary);
-          setSummaryPreset(s.preset);
-          setPreset(s.preset);
-        })
-        .catch(() => {
-          /* non-fatal — summarize button still works */
-        });
-    }
-  }, [job.id, job.has_summary]);
-
-  function handleSummarize() {
-    setSummarizing(true);
-    setSummaryError(null);
-    setSummaryProgress("Summarizing…");
-    summarizeJob(job.id, preset)
-      .then(({ task_id }) => {
-        subscribeJob<SummarizeTaskResult>(task_id, {
-          onProgress: (p) => setSummaryProgress(p.message || "Summarizing…"),
-          onDone: (result) => {
-            setSummary(result.summary);
-            setSummaryPreset(result.preset);
-            setSummarizing(false);
-          },
-          onError: (msg) => {
-            setSummaryError(msg);
-            setSummarizing(false);
-          },
-        });
-      })
-      .catch((e) => {
-        setSummaryError((e as Error).message);
-        setSummarizing(false);
-      });
-  }
+    if (summaryState.preset) setPreset(summaryState.preset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.id]);
 
   async function copySummary() {
     if (!summary) return;
     await navigator.clipboard.writeText(summary);
     setSummaryCopied(true);
     setTimeout(() => setSummaryCopied(false), 1500);
-  }
-
-  function handleSuggestNames() {
-    setSuggesting(true);
-    setSuggestError(null);
-    suggestNames(job.id)
-      .then(({ task_id }) => {
-        subscribeJob<SuggestNamesTaskResult>(task_id, {
-          onProgress: () => {},
-          onDone: (result) => {
-            for (const [label, name] of Object.entries(result.names)) {
-              if (name) renameSpeaker(label, name);
-            }
-            setSuggesting(false);
-          },
-          onError: (msg) => {
-            setSuggestError(msg);
-            setSuggesting(false);
-          },
-        });
-      })
-      .catch((e) => {
-        setSuggestError((e as Error).message);
-        setSuggesting(false);
-      });
-  }
-
-  function renameSpeaker(label: string, value: string) {
-    setNames((prev) => {
-      const next = { ...prev };
-      if (value && value !== label) next[label] = value;
-      else delete next[label];
-      localStorage.setItem(namesKey(job.id), JSON.stringify(next));
-      return next;
-    });
   }
 
   function displayName(label: string): string {
@@ -280,7 +196,7 @@ export default function JobResult({ job }: Props) {
                 <span className={`h-2 w-2 rounded-full ${color?.dot ?? "bg-slate-500"}`} />
                 <input
                   value={displayName(label)}
-                  onChange={(e) => renameSpeaker(label, e.target.value)}
+                  onChange={(e) => onRenameSpeaker(label, e.target.value)}
                   placeholder={label}
                   className="w-32 rounded border border-slate-600 bg-slate-800 px-2 py-1 text-sm text-slate-100 focus:border-sky-400 focus:outline-none"
                 />
@@ -288,13 +204,13 @@ export default function JobResult({ job }: Props) {
             );
           })}
           <button
-            onClick={handleSuggestNames}
-            disabled={suggesting}
+            onClick={onSuggestNames}
+            disabled={nameTask.running}
             className="rounded-md bg-slate-700 px-3 py-1.5 text-xs font-medium hover:bg-slate-600 disabled:opacity-50"
           >
-            {suggesting ? "Suggesting…" : "Suggest names"}
+            {nameTask.running ? "Suggesting…" : "Suggest names"}
           </button>
-          {suggestError && <span className="text-xs text-red-300">{suggestError}</span>}
+          {nameTask.error && <span className="text-xs text-red-300">{nameTask.error}</span>}
         </div>
       )}
 
@@ -315,14 +231,14 @@ export default function JobResult({ job }: Props) {
           ))}
         </select>
         <button
-          onClick={handleSummarize}
+          onClick={() => onSummarize(preset)}
           disabled={summarizing}
           className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium hover:bg-sky-500 disabled:opacity-50"
         >
-          {summarizing ? "Summarizing…" : "Summarize"}
+          {summarizing ? "Summarizing…" : summary ? "Re-summarize" : "Summarize"}
         </button>
-        {summarizing && <span className="text-xs text-slate-400">{summaryProgress}</span>}
-        {summaryError && <span className="text-xs text-red-300">{summaryError}</span>}
+        {summarizing && <span className="text-xs text-slate-400">{summaryState.progress}</span>}
+        {summaryState.error && <span className="text-xs text-red-300">{summaryState.error}</span>}
       </div>
 
       {summary && (
