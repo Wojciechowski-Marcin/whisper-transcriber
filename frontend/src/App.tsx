@@ -35,6 +35,7 @@ export default function App() {
   const [active, setActive] = useState<Job | null>(null);
   const [history, setHistory] = useState<Job[]>([]);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const [language, setLanguage] = useState<string>(""); // "" = auto-detect
   const [diarize, setDiarize] = useState(false);
   const [minSpeakers, setMinSpeakers] = useState<number | null>(null);
   const [maxSpeakers, setMaxSpeakers] = useState<number | null>(null);
@@ -163,6 +164,7 @@ export default function App() {
         const jobId = await startJob(
           file,
           {
+            language: language || undefined,
             diarize,
             minSpeakers: minSpeakers ?? undefined,
             maxSpeakers: maxSpeakers ?? undefined,
@@ -232,6 +234,8 @@ export default function App() {
         <main className="space-y-5">
           <Dropzone
             disabled={false}
+            language={language}
+            onLanguageChange={setLanguage}
             diarize={diarize}
             onDiarizeChange={setDiarize}
             minSpeakers={minSpeakers}

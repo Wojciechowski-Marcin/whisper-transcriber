@@ -1,7 +1,17 @@
 import { useRef, useState } from "react";
 
+// Kept short on purpose — auto-detect handles the rest. Add codes here as
+// the backend/Whisper coverage is validated for them.
+const LANGUAGES: { code: string; label: string }[] = [
+  { code: "", label: "Auto-detect" },
+  { code: "pl", label: "Polish" },
+  { code: "en", label: "English" },
+];
+
 interface Props {
   disabled: boolean;
+  language: string;
+  onLanguageChange: (value: string) => void;
   diarize: boolean;
   onDiarizeChange: (value: boolean) => void;
   minSpeakers: number | null;
@@ -13,6 +23,8 @@ interface Props {
 
 export default function Dropzone({
   disabled,
+  language,
+  onLanguageChange,
   diarize,
   onDiarizeChange,
   minSpeakers,
@@ -77,6 +89,25 @@ export default function Dropzone({
       </div>
 
       <div className="space-y-2">
+        <label className="flex items-center gap-2 text-sm text-slate-300">
+          Language
+          <select
+            value={language}
+            disabled={disabled}
+            onChange={(e) => onLanguageChange(e.target.value)}
+            className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-sm"
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+          <span className="text-xs text-slate-500">
+            — pick the spoken language to skip autodetect (more reliable on noisy audio)
+          </span>
+        </label>
+
         <label className="flex items-center gap-2 text-sm text-slate-300 select-none">
           <input
             type="checkbox"

@@ -1,9 +1,11 @@
 """Ollama-backed summarization and speaker-name suggestion.
 
-Long transcripts are handled via map-reduce: split into ``summary_chunk_chars``
-chunks, summarize each ("map"), then summarize the concatenated chunk-notes
-("reduce") — keeping every LLM call within context regardless of transcript
-length.
+Long transcripts are handled by an incremental *refine* chain: the document is
+built from the first ``summary_chunk_chars`` chunk, then each later chunk is
+folded into the running document, preserving everything already captured. This
+keeps every LLM call within context while ensuring the *whole* recording is
+represented — a map-reduce over independent per-chunk notes tends to collapse
+onto the opening, because an 8B model front-weights the final synthesis.
 """
 from __future__ import annotations
 
@@ -35,44 +37,40 @@ _FAITHFULNESS_RULES = (
     "- Write your response in the same language as the transcript.\n"
 )
 
-# A "map" prompt turns one chunk into faithful working notes; it is reused for
-# every chunk and the results are merged by the matching "reduce" prompt.
-_MAP_SUFFIX = (
-    "These are working notes for one part of a longer recording; they will be "
-    "merged, in order, with notes from the other parts — so keep them concise "
-    "and factual rather than polished. Preserve concrete specifics: names, "
-    "numbers, dates, decisions, and outcomes, and keep events in the order they "
-    "happen. Record only what this excerpt supports and skip anything it does "
-    "not cover.\n\n" + _FAITHFULNESS_RULES
+# A "reduce" prompt produces the final document. It runs on EITHER the whole
+# transcript (short recordings) OR, as the first step of the refine chain, the
+# opening chunk of a long one — so it must read naturally for a raw transcript.
+_REDUCE_SUFFIX = (
+    "You are given the transcript of a single recording (for a long recording, "
+    "this may be only its opening part). Produce the document described above. "
+    "Where the same point or event appears more than once, state it a single "
+    "time. Use the exact headings given, in the given order, and omit any "
+    "heading that would have no real content (do not write \"none\" or "
+    "\"N/A\"). Output clean GitHub-flavoured markdown with no preamble, "
+    "meta-commentary, or sign-off.\n\n" + _FAITHFULNESS_RULES
 )
 
-# A "reduce" prompt produces the final document. It runs on EITHER the whole
-# transcript (short recordings) OR the concatenated, in-order per-chunk notes
-# (long recordings), so it must read naturally for both — never assume "notes".
-_REDUCE_SUFFIX = (
-    "You are given source material about a single recording: either the "
-    "transcript itself, or a set of chronological notes summarizing consecutive "
-    "parts of it. Produce the document described above. Where the same point or "
-    "event appears more than once, state it a single time. Use the exact "
-    "headings given, in the given order, and omit any heading that would have "
-    "no real content (do not write \"none\" or \"N/A\"). Output clean "
-    "GitHub-flavoured markdown with no preamble, meta-commentary, or "
-    "sign-off.\n\n" + _FAITHFULNESS_RULES
+# Appended to the reduce prompt to turn it into the refine step. The model is
+# given the document built from earlier parts plus the NEXT chunk, and must
+# extend the document to cover the new part without losing the old — this is
+# what guarantees the whole recording is represented, not just its opening.
+_REFINE_SUFFIX = (
+    "\n\n--- INCREMENTAL UPDATE MODE ---\n"
+    "You are building this document part by part. You will be given the "
+    "document produced from the earlier parts of the recording, then the NEXT "
+    "part of the transcript. Rewrite the document so it covers the recording up "
+    "to and including this new part:\n"
+    "- Keep every fact, name, event, and section already present; do not drop "
+    "or water down earlier content to make room.\n"
+    "- Weave in what the new part adds — new events, people, decisions, "
+    "outcomes — in its correct chronological place.\n"
+    "- Keep the exact same sections, headings, and format described above.\n"
+    "Output only the full updated document, with no note about what changed."
 )
 
 SUMMARY_PRESETS: dict[str, dict[str, str]] = {
     "dnd": {
         "label": "D&D session recap",
-        "map_prompt": (
-            "You are taking notes on part of a recorded Dungeons & Dragons "
-            "session. Capture, in order: what happens in the story; where the "
-            "party goes; which NPCs they meet and what is learned about each; "
-            "what each player character does, says, or decides; how fights play "
-            "out and who does what; loot, gold, or rewards gained; and any "
-            "cliffhanger, plan, or unanswered question. Write down character "
-            "and place names exactly as spoken, and note any especially "
-            "dramatic, funny, or memorable moment.\n\n" + _MAP_SUFFIX
-        ),
         "reduce_prompt": (
             "You are writing the recap of a single Dungeons & Dragons session "
             "for the players to read before the next game. Make it engaging and "
@@ -90,12 +88,6 @@ SUMMARY_PRESETS: dict[str, dict[str, str]] = {
     },
     "meeting": {
         "label": "Meeting notes",
-        "map_prompt": (
-            "You are taking notes on part of a meeting. Record: the topics "
-            "discussed, the key points and arguments made on each, any "
-            "decisions reached, and any action items — including who is "
-            "responsible and any deadline whenever stated.\n\n" + _MAP_SUFFIX
-        ),
         "reduce_prompt": (
             "You are writing the notes for a single meeting. Use these "
             "sections, in this order:\n"
@@ -111,12 +103,6 @@ SUMMARY_PRESETS: dict[str, dict[str, str]] = {
     },
     "call": {
         "label": "Call summary",
-        "map_prompt": (
-            "You are taking notes on part of a phone or video call. Record: the "
-            "apparent purpose, the topics discussed, questions raised and the "
-            "answers given, any agreements or outcomes, and any follow-ups or "
-            "next steps mentioned.\n\n" + _MAP_SUFFIX
-        ),
         "reduce_prompt": (
             "You are writing the summary of a single call. Use these sections, "
             "in this order:\n"
@@ -129,11 +115,6 @@ SUMMARY_PRESETS: dict[str, dict[str, str]] = {
     },
     "tldr": {
         "label": "General TL;DR",
-        "map_prompt": (
-            "You are taking notes on part of a recording. Capture the key "
-            "takeaways, important facts, and anything a reader would need to "
-            "understand what was said and why it matters.\n\n" + _MAP_SUFFIX
-        ),
         "reduce_prompt": (
             "You are writing a tight TL;DR of a recording. Open with a one- to "
             "two-sentence overview of what the recording is about, then give a "
@@ -244,24 +225,30 @@ async def summarize(
 ) -> str:
     spec = SUMMARY_PRESETS[preset]
     directive = _language_directive(language)
-    map_prompt = directive + spec["map_prompt"]
     reduce_prompt = directive + spec["reduce_prompt"]
     rendered = render_transcript(segments, text, has_speakers)
     chunks = _split_chunks(rendered, settings.summary_chunk_chars)
+    total = len(chunks)
 
-    if len(chunks) == 1:
+    # First chunk (or the whole thing, if short) → an initial structured draft.
+    if on_progress:
+        on_progress(1, total)
+    document = await _chat(settings, reduce_prompt, chunks[0])
+    if total == 1:
+        return document
+
+    # Fold each remaining chunk into the running document so the entire
+    # recording is covered, not just its opening.
+    refine_prompt = reduce_prompt + _REFINE_SUFFIX
+    for i, chunk in enumerate(chunks[1:], start=2):
         if on_progress:
-            on_progress(1, 1)
-        return await _chat(settings, reduce_prompt, chunks[0])
-
-    notes = []
-    for i, chunk in enumerate(chunks, start=1):
-        if on_progress:
-            on_progress(i, len(chunks))
-        notes.append(await _chat(settings, map_prompt, chunk))
-
-    combined = "\n\n---\n\n".join(notes)
-    return await _chat(settings, reduce_prompt, combined)
+            on_progress(i, total)
+        user = (
+            "Document so far:\n" + document
+            + "\n\n--- NEXT PART OF THE TRANSCRIPT ---\n" + chunk
+        )
+        document = await _chat(settings, refine_prompt, user)
+    return document
 
 
 _NAME_SYSTEM_PROMPT = (
@@ -287,6 +274,45 @@ _NAME_SYSTEM_PROMPT = (
 )
 
 
+def _sample_for_speaker_names(segments: list[dict], budget_chars: int) -> tuple[str, bool]:
+    """Build a name-resolution excerpt that spans the whole recording.
+
+    A long transcript can't fit in context, but plain head-truncation only ever
+    sees the opening minutes — where speakers rarely introduce themselves. So we
+    take several evenly-spaced *windows of consecutive lines*: spreading across
+    the timeline surfaces introductions and address-by-name moments wherever
+    they occur, while keeping each window contiguous preserves the local
+    adjacency that name attribution relies on (e.g. "Thanks, Anna" replying to
+    the line just above). Returns the excerpt and whether it was trimmed.
+    """
+    lines = [
+        f"{seg.get('speaker') or 'Speaker ?'}: {(seg.get('text') or '').strip()}"
+        for seg in segments
+        if (seg.get("text") or "").strip()
+    ]
+    joined = "\n".join(lines)
+    if len(joined) <= budget_chars or len(lines) <= 1:
+        return joined, False
+
+    num_windows = 6
+    per_window = budget_chars // num_windows
+    n = len(lines)
+    windows: list[str] = []
+    for w in range(num_windows):
+        start = int(w / num_windows * n)
+        buf: list[str] = []
+        length = 0
+        i = start
+        # The first window starts at line 0 to catch opening self-introductions.
+        while i < n and (not buf or length + len(lines[i]) + 1 <= per_window):
+            buf.append(lines[i])
+            length += len(lines[i]) + 1
+            i += 1
+        if buf:
+            windows.append("\n".join(buf))
+    return "\n\n[…]\n\n".join(windows), True
+
+
 def _extract_last_json_object(content: str) -> dict:
     """Return the last flat ``{...}`` object in the text that parses as JSON.
 
@@ -305,13 +331,19 @@ def _extract_last_json_object(content: str) -> dict:
 async def suggest_speaker_names(
     settings: Settings, segments: list[dict], text: str
 ) -> dict[str, Optional[str]]:
-    rendered = render_transcript(segments, text, True)
-    rendered = rendered[: settings.summary_chunk_chars]
+    rendered, trimmed = _sample_for_speaker_names(segments, settings.summary_chunk_chars)
     labels = sorted({seg.get("speaker") for seg in segments if seg.get("speaker")})
 
+    excerpt_note = (
+        "The transcript below is several excerpts sampled from across the whole "
+        "recording (separated by […]); gaps are expected.\n\n"
+        if trimmed
+        else ""
+    )
     user = (
         "Speaker labels to resolve: " + ", ".join(labels) + "\n\n"
-        "Transcript:\n" + rendered
+        + excerpt_note
+        + "Transcript:\n" + rendered
     )
     content = await _chat(settings, _NAME_SYSTEM_PROMPT, user)
     parsed = _extract_last_json_object(content)
