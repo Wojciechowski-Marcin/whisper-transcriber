@@ -29,12 +29,16 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b-instruct-q4_K_M"
     # Context window (tokens) requested per LLM call. Must comfortably exceed
-    # one chunk (~summary_chunk_chars/3 tokens) plus prompt + output, or Ollama
-    # silently truncates the input and summaries lose information.
-    ollama_num_ctx: int = 8192
-    # Map-reduce threshold/chunk size (chars) — keeps each LLM call within
-    # context regardless of transcript length.
-    summary_chunk_chars: int = 12000
+    # one chunk (~summary_chunk_chars/3 tokens) plus the document-so-far and
+    # prompt overhead, or Ollama silently truncates the input.
+    # 16384 fits a ~28000-char chunk (~9300 tokens) + ~2000-token running
+    # document + prompt, with headroom for the output.
+    ollama_num_ctx: int = 16384
+    # Refine chain chunk size (chars). Larger chunks = fewer refine steps =
+    # less accumulated drift across iterations. At 28000 chars a 76k-char
+    # transcript is ~3 chunks instead of 7, which is a big quality win for
+    # long D&D sessions. Must stay within ollama_num_ctx (see above).
+    summary_chunk_chars: int = 28000
     # httpx read timeout (s) for LLM calls; 0 = no timeout (long map-reduce runs).
     llm_timeout: int = 0
 
